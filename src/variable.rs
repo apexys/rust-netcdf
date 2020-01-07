@@ -5,7 +5,6 @@ use super::attribute::AttrValue;
 use super::attribute::Attribute;
 use super::dimension::Dimension;
 use super::error;
-use super::LOCK;
 #[cfg(feature = "ndarray")]
 use ndarray::ArrayD;
 use netcdf_sys::*;
@@ -13,6 +12,7 @@ use std::convert::TryInto;
 use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::marker::Sized;
+use std::sync::{Arc, Mutex};
 
 #[allow(clippy::doc_markdown)]
 /// This struct defines a `netCDF` variable.
@@ -24,6 +24,7 @@ pub struct Variable<'g> {
     pub(crate) vartype: nc_type,
     pub(crate) ncid: nc_type,
     pub(crate) varid: nc_type,
+    pub(crate) lock: Arc<Mutex<()>>,
     pub(crate) _group: PhantomData<&'g nc_type>,
 }
 
@@ -55,7 +56,11 @@ pub enum Endianness {
 
 #[allow(clippy::len_without_is_empty)]
 impl<'g> Variable<'g> {
-    pub(crate) fn find_from_name(ncid: nc_type, name: &str) -> error::Result<Option<Variable<'g>>> {
+    pub(crate) fn find_from_name(
+        ncid: nc_type,
+        name: &str,
+        lock: Arc<Mutex<()>>,
+    ) -> error::Result<Option<Variable<'g>>> {
         let cname = super::utils::short_name_to_bytes(name)?;
         let mut varid = 0;
         let e = unsafe { nc_inq_varid(ncid, cname.as_ptr() as *const _, &mut varid) };
@@ -89,6 +94,7 @@ impl<'g> Variable<'g> {
             ncid,
             varid,
             vartype: xtype,
+            lock,
             _group: PhantomData,
         }))
     }
@@ -114,7 +120,7 @@ impl<'g> Variable<'g> {
     /// Get an attribute of this variable
     pub fn attribute<'a>(&'a self, name: &str) -> error::Result<Option<Attribute<'a>>> {
         // Need to lock when reading the first attribute (per variable)
-        let _l = super::LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         Attribute::find_from_name(self.ncid, Some(self.varid), name)
     }
     /// Iterator over all the attributes of this variable
@@ -122,7 +128,7 @@ impl<'g> Variable<'g> {
         &'a self,
     ) -> error::Result<impl Iterator<Item = error::Result<Attribute<'a>>>> {
         // Need to lock when reading the first attribute (per variable)
-        let _l = super::LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         crate::attribute::AttributeIterator::new(self.ncid, Some(self.varid))
     }
     /// Dimensions for a variable
@@ -464,7 +470,7 @@ macro_rules! impl_numeric {
                 let mut buff: Self = 0 as _;
                 // Get a pointer to an array
                 let indices_ptr = indices.as_ptr();
-                let _g = LOCK.lock().unwrap();
+                let _l = variable.lock.lock().unwrap();
                 error::checked($nc_get_var1_type(
                     variable.ncid,
                     variable.varid,
@@ -480,7 +486,7 @@ macro_rules! impl_numeric {
                 slice_len: &[usize],
                 values: *mut Self,
             ) -> error::Result<()> {
-                let _l = LOCK.lock().unwrap();
+                let _l = variable.lock.lock().unwrap();
 
                 error::checked($nc_get_vara_type(
                     variable.ncid,
@@ -528,7 +534,7 @@ macro_rules! impl_numeric {
                 strides: &[isize],
                 values: *mut Self,
             ) -> error::Result<()> {
-                let _l = LOCK.lock().unwrap();
+                let _l = variable.lock.lock().unwrap();
                 error::checked($nc_get_vars_type(
                     variable.ncid,
                     variable.varid,
@@ -708,7 +714,7 @@ impl<'g> VariableMut<'g> {
     where
         T: Into<AttrValue>,
     {
-        let _l = LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         Attribute::put(self.ncid, self.varid, name, val.into())
     }
 }
@@ -743,7 +749,7 @@ impl<'g> Variable<'g> {
 
         let mut s: *mut std::os::raw::c_char = std::ptr::null_mut();
         unsafe {
-            let _l = LOCK.lock().unwrap();
+            let _l = self.lock.lock().unwrap();
             error::checked(nc_get_var1_string(
                 self.ncid,
                 self.varid,
@@ -801,7 +807,7 @@ impl<'g> Variable<'g> {
         let mut location = std::mem::MaybeUninit::uninit();
         let mut nofill: nc_type = 0;
         unsafe {
-            let _l = LOCK.lock().unwrap();
+            let _l = self.lock.lock().unwrap();
             error::checked(nc_inq_var_fill(
                 self.ncid,
                 self.varid,
@@ -1122,6 +1128,7 @@ impl<'g> VariableMut<'g> {
         xtype: nc_type,
         name: &str,
         dims: &[&str],
+        lock: Arc<Mutex<()>>,
     ) -> error::Result<Self> {
         let dimensions = dims
             .iter()
@@ -1162,6 +1169,7 @@ impl<'g> VariableMut<'g> {
                 varid,
                 vartype: xtype,
                 dimensions,
+                lock,
                 _group: PhantomData,
             },
             PhantomData,
@@ -1171,6 +1179,7 @@ impl<'g> VariableMut<'g> {
 
 pub(crate) fn variables_at_ncid<'g>(
     ncid: nc_type,
+    lock: Arc<Mutex<()>>,
 ) -> error::Result<impl Iterator<Item = error::Result<Variable<'g>>>> {
     let mut nvars = 0;
     unsafe {
@@ -1196,6 +1205,7 @@ pub(crate) fn variables_at_ncid<'g>(
             varid,
             dimensions,
             vartype: xtype,
+            lock: lock.clone(),
             _group: PhantomData,
         })
     }))
@@ -1206,6 +1216,7 @@ pub(crate) fn add_variable_from_identifiers<'g>(
     name: &str,
     dims: &[super::dimension::Identifier],
     xtype: nc_type,
+    lock: Arc<Mutex<()>>,
 ) -> error::Result<VariableMut<'g>> {
     let cname = super::utils::short_name_to_bytes(name)?;
 
@@ -1249,6 +1260,7 @@ pub(crate) fn add_variable_from_identifiers<'g>(
             dimensions,
             varid,
             vartype: xtype,
+            lock,
             _group: PhantomData,
         },
         PhantomData,

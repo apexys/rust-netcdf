@@ -2,7 +2,6 @@
 
 #![allow(clippy::similar_names)]
 use super::error;
-use super::LOCK;
 use netcdf_sys::*;
 use std::convert::TryInto;
 use std::marker::PhantomData;
@@ -52,7 +51,6 @@ impl<'a> Attribute<'a> {
     }
     /// Number of elements in this attribute
     fn num_elems(&self) -> error::Result<usize> {
-        let _l = LOCK.lock().unwrap();
         let mut nelems = 0;
         unsafe {
             error::checked(nc_inq_attlen(

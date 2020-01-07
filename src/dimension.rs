@@ -2,7 +2,6 @@
 
 #![allow(clippy::similar_names)]
 use super::error;
-use super::LOCK;
 use netcdf_sys::*;
 use std::convert::TryInto;
 use std::marker::PhantomData;
@@ -32,11 +31,8 @@ impl<'g> Dimension<'g> {
             x.get()
         } else {
             let mut len = 0;
-            let err = unsafe {
-                // Must lock in case other variables adds to the dimension length
-                let _l = LOCK.lock().unwrap();
-                error::checked(nc_inq_dimlen(self.id.ncid, self.id.dimid, &mut len))
-            };
+            let err =
+                unsafe { error::checked(nc_inq_dimlen(self.id.ncid, self.id.dimid, &mut len)) };
 
             // Should log or handle this somehow...
             err.map(|_| len).unwrap_or(0)

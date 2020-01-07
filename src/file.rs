@@ -6,21 +6,28 @@ use super::dimension::{self, Dimension};
 use super::error;
 use super::group::{Group, GroupMut};
 use super::variable::{Numeric, Variable, VariableMut};
-use super::LOCK;
+use lazy_static::lazy_static;
 use netcdf_sys::*;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::path;
+use std::sync::{Arc, Mutex};
+
+lazy_static! {
+    /// Use this when accessing netcdf functions
+    pub(crate) static ref FILE_LIST_LOCK: Mutex<()> = Mutex::new(());
+}
 
 #[derive(Debug)]
 pub(crate) struct File {
     ncid: nc_type,
+    lock: Arc<Mutex<()>>,
 }
 
 impl Drop for File {
     fn drop(&mut self) {
         unsafe {
-            let _g = LOCK.lock().unwrap();
+            let _l = FILE_LIST_LOCK.lock().unwrap();
             // Can't really do much with an error here
             let _err = error::checked(nc_close(self.ncid));
         }
@@ -37,10 +44,13 @@ impl File {
         let f = CString::new(path.to_str().unwrap()).unwrap();
         let mut ncid: nc_type = 0;
         unsafe {
-            let _l = LOCK.lock().unwrap();
+            let _l = FILE_LIST_LOCK.lock().unwrap();
             error::checked(nc_open(f.as_ptr(), NC_NOWRITE, &mut ncid))?;
         }
-        Ok(ReadOnlyFile(Self { ncid }))
+        Ok(ReadOnlyFile(Self {
+            ncid,
+            lock: Arc::new(Mutex::new(())),
+        }))
     }
 
     #[allow(clippy::doc_markdown)]
@@ -50,11 +60,14 @@ impl File {
         let f = CString::new(path.to_str().unwrap()).unwrap();
         let mut ncid: nc_type = -1;
         unsafe {
-            let _g = LOCK.lock().unwrap();
+            let _l = FILE_LIST_LOCK.lock().unwrap();
             error::checked(nc_open(f.as_ptr(), NC_WRITE, &mut ncid))?;
         }
 
-        Ok(MutableFile(ReadOnlyFile(Self { ncid })))
+        Ok(MutableFile(ReadOnlyFile(Self {
+            ncid,
+            lock: Arc::new(Mutex::new(())),
+        })))
     }
     #[allow(clippy::doc_markdown)]
     /// Open a netCDF file in creation mode.
@@ -64,11 +77,14 @@ impl File {
         let f = CString::new(path.to_str().unwrap()).unwrap();
         let mut ncid: nc_type = -1;
         unsafe {
-            let _g = LOCK.lock().unwrap();
+            let _l = FILE_LIST_LOCK.lock().unwrap();
             error::checked(nc_create(f.as_ptr(), NC_NETCDF4 | NC_CLOBBER, &mut ncid))?;
         }
 
-        Ok(MutableFile(ReadOnlyFile(Self { ncid })))
+        Ok(MutableFile(ReadOnlyFile(Self {
+            ncid,
+            lock: Arc::new(Mutex::new(())),
+        })))
     }
 
     #[cfg(feature = "memory")]
@@ -79,7 +95,7 @@ impl File {
         let cstr = std::ffi::CString::new(name.unwrap_or("/")).unwrap();
         let mut ncid = 0;
         unsafe {
-            let _l = LOCK.lock().unwrap();
+            let _l = FILE_LIST_LOCK.lock().unwrap();
             error::checked(nc_open_mem(
                 cstr.as_ptr(),
                 NC_NOWRITE,
@@ -129,6 +145,7 @@ impl ReadOnlyFile {
     pub fn root(&self) -> Group {
         Group {
             ncid: self.ncid(),
+            lock: self.0.lock.clone(),
             _file: PhantomData,
         }
     }
@@ -139,25 +156,25 @@ impl ReadOnlyFile {
 
     /// Get a variable from the group
     pub fn variable<'f>(&'f self, name: &str) -> error::Result<Option<Variable<'f>>> {
-        Variable::find_from_name(self.ncid(), name)
+        Variable::find_from_name(self.ncid(), name, self.0.lock.clone())
     }
     /// Iterate over all variables in a group
     pub fn variables<'f>(
         &'f self,
     ) -> error::Result<impl Iterator<Item = error::Result<Variable<'f>>>> {
-        super::variable::variables_at_ncid(self.ncid())
+        super::variable::variables_at_ncid(self.ncid(), self.0.lock.clone())
     }
 
     /// Get a single attribute
     pub fn attribute<'f>(&'f self, name: &str) -> error::Result<Option<Attribute<'f>>> {
-        let _l = super::LOCK.lock().unwrap();
+        let _l = self.0.lock.lock().unwrap();
         Attribute::find_from_name(self.ncid(), None, name)
     }
     /// Get all attributes in the root group
     pub fn attributes<'f>(
         &'f self,
     ) -> error::Result<impl Iterator<Item = error::Result<Attribute<'f>>>> {
-        let _l = super::LOCK.lock().unwrap();
+        let _l = self.0.lock.lock().unwrap();
         crate::attribute::AttributeIterator::new(self.0.ncid, None)
     }
 
@@ -178,7 +195,7 @@ impl ReadOnlyFile {
     }
     /// Iterator over all subgroups in the root group
     pub fn groups<'f>(&'f self) -> error::Result<impl Iterator<Item = Group<'f>>> {
-        super::group::groups_at_ncid(self.ncid())
+        super::group::groups_at_ncid(self.ncid(), self.0.lock.clone())
     }
 }
 
@@ -239,13 +256,13 @@ impl MutableFile {
     where
         T: Into<AttrValue>,
     {
-        let _l = LOCK.lock().unwrap();
+        let _l = (self.0).0.lock.lock().unwrap();
         Attribute::put(self.ncid(), NC_GLOBAL, name, val.into())
     }
 
     /// Adds a dimension with the given name and size. A size of zero gives an unlimited dimension
     pub fn add_dimension<'f>(&'f mut self, name: &str, len: usize) -> error::Result<Dimension<'f>> {
-        let _l = LOCK.lock().unwrap();
+        let _l = (self.0).0.lock.lock().unwrap();
         super::dimension::add_dimension_at(self.ncid(), name, len)
     }
     /// Adds a dimension with unbounded size
@@ -255,7 +272,7 @@ impl MutableFile {
 
     /// Add an empty group to the dataset
     pub fn add_group<'f>(&'f mut self, name: &str) -> error::Result<GroupMut<'f>> {
-        let _l = LOCK.lock().unwrap();
+        let _l = (self.0).0.lock.lock().unwrap();
         GroupMut::add_group_at(self.ncid(), name)
     }
 
@@ -271,8 +288,8 @@ impl MutableFile {
     where
         T: Numeric,
     {
-        let _l = LOCK.lock().unwrap();
-        VariableMut::add_from_str(self.ncid(), T::NCTYPE, name, dims)
+        let _l = (self.0).0.lock.lock().unwrap();
+        VariableMut::add_from_str(self.ncid(), T::NCTYPE, name, dims, (self.0).0.lock.clone())
     }
     /// Adds a variable with a basic type of string
     pub fn add_string_variable<'f>(
@@ -280,8 +297,8 @@ impl MutableFile {
         name: &str,
         dims: &[&str],
     ) -> error::Result<VariableMut<'f>> {
-        let _l = LOCK.lock().unwrap();
-        VariableMut::add_from_str(self.ncid(), NC_STRING, name, dims)
+        let _l = (self.0).0.lock.lock().unwrap();
+        VariableMut::add_from_str(self.ncid(), NC_STRING, name, dims, (self.0).0.lock.clone())
     }
     /// Adds a variable from a set of unique identifiers, recursing upwards
     /// from the current group if necessary.
@@ -293,8 +310,14 @@ impl MutableFile {
     where
         T: Numeric,
     {
-        let _l = LOCK.lock().unwrap();
-        super::variable::add_variable_from_identifiers(self.ncid(), name, dims, T::NCTYPE)
+        let _l = (self.0).0.lock.lock().unwrap();
+        super::variable::add_variable_from_identifiers(
+            self.ncid(),
+            name,
+            dims,
+            T::NCTYPE,
+            (self.0).0.lock.clone(),
+        )
     }
 }
 

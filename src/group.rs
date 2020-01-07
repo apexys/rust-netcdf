@@ -6,10 +6,10 @@ use super::attribute::Attribute;
 use super::dimension::Dimension;
 use super::error;
 use super::variable::{Numeric, Variable, VariableMut};
-use super::LOCK;
 use netcdf_sys::*;
 use std::convert::TryInto;
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 /// Main component of the netcdf format. Holds all variables,
 /// attributes, and dimensions. A group can always see the parents items,
@@ -17,6 +17,7 @@ use std::marker::PhantomData;
 #[derive(Debug, Clone)]
 pub struct Group<'f> {
     pub(crate) ncid: nc_type,
+    pub(crate) lock: Arc<Mutex<()>>,
     pub(crate) _file: PhantomData<&'f nc_type>,
 }
 
@@ -60,7 +61,7 @@ impl<'f> Group<'f> {
     where
         'f: 'g,
     {
-        Variable::find_from_name(self.id(), name)
+        Variable::find_from_name(self.id(), name, self.lock.clone())
     }
     /// Iterate over all variables in a group
     pub fn variables<'g>(
@@ -69,12 +70,12 @@ impl<'f> Group<'f> {
     where
         'f: 'g,
     {
-        super::variable::variables_at_ncid(self.id())
+        super::variable::variables_at_ncid(self.id(), self.lock.clone())
     }
 
     /// Get a single attribute
     pub fn attribute<'a>(&'a self, name: &str) -> error::Result<Option<Attribute<'a>>> {
-        let _l = super::LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         Attribute::find_from_name(self.ncid, None, name)
     }
     /// Get all attributes in the group
@@ -82,7 +83,7 @@ impl<'f> Group<'f> {
         &'a self,
     ) -> error::Result<impl Iterator<Item = error::Result<Attribute<'a>>>> {
         // Need to lock when reading the first attribute (per group)
-        let _l = super::LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         crate::attribute::AttributeIterator::new(self.ncid, None)
     }
 
@@ -115,7 +116,7 @@ impl<'f> Group<'f> {
     where
         'f: 'g,
     {
-        groups_at_ncid(self.id())
+        groups_at_ncid(self.id(), self.lock.clone())
     }
 }
 
@@ -160,13 +161,13 @@ impl<'f> GroupMut<'f> {
     where
         T: Into<AttrValue>,
     {
-        let _l = LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         Attribute::put(self.ncid, NC_GLOBAL, name, val.into())
     }
 
     /// Adds a dimension with the given name and size. A size of zero gives an unlimited dimension
     pub fn add_dimension<'g>(&'g mut self, name: &str, len: usize) -> error::Result<Dimension<'g>> {
-        let _l = LOCK.lock().unwrap();
+        let _l = self.lock.lock().unwrap();
         super::dimension::add_dimension_at(self.id(), name, len)
     }
 
@@ -185,6 +186,7 @@ impl<'f> GroupMut<'f> {
         Ok(Self(
             Group {
                 ncid: grpid,
+                lock: Arc::new(Mutex::new(())),
                 _file: PhantomData,
             },
             PhantomData,
@@ -196,7 +198,7 @@ impl<'f> GroupMut<'f> {
     where
         'f: 'g,
     {
-        let _l = LOCK.lock().unwrap();
+        let _l = self.0.lock.lock().unwrap();
         Self::add_group_at(self.id(), name)
     }
 
@@ -213,8 +215,8 @@ impl<'f> GroupMut<'f> {
         T: Numeric,
         'f: 'g,
     {
-        let _l = LOCK.lock().unwrap();
-        VariableMut::add_from_str(self.id(), T::NCTYPE, name, dims)
+        let _l = self.0.lock.lock().unwrap();
+        VariableMut::add_from_str(self.id(), T::NCTYPE, name, dims, self.0.lock.clone())
     }
     /// Adds a variable with a basic type of string
     pub fn add_string_variable<'g>(
@@ -222,8 +224,8 @@ impl<'f> GroupMut<'f> {
         name: &str,
         dims: &[&str],
     ) -> error::Result<VariableMut<'g>> {
-        let _l = LOCK.lock().unwrap();
-        VariableMut::add_from_str(self.id(), NC_STRING, name, dims)
+        let _l = self.0.lock.lock().unwrap();
+        VariableMut::add_from_str(self.id(), NC_STRING, name, dims, self.0.lock.clone())
     }
     /// Adds a variable from a set of unique identifiers, recursing upwards
     /// from the current group if necessary.
@@ -235,12 +237,21 @@ impl<'f> GroupMut<'f> {
     where
         T: Numeric,
     {
-        let _l = LOCK.lock().unwrap();
-        super::variable::add_variable_from_identifiers(self.id(), name, dims, T::NCTYPE)
+        let _l = self.0.lock.lock().unwrap();
+        super::variable::add_variable_from_identifiers(
+            self.id(),
+            name,
+            dims,
+            T::NCTYPE,
+            self.0.lock.clone(),
+        )
     }
 }
 
-pub(crate) fn groups_at_ncid<'f>(ncid: nc_type) -> error::Result<impl Iterator<Item = Group<'f>>> {
+pub(crate) fn groups_at_ncid<'f>(
+    ncid: nc_type,
+    lock: Arc<Mutex<()>>,
+) -> error::Result<impl Iterator<Item = Group<'f>>> {
     let mut num_grps = 0;
     unsafe {
         error::checked(nc_inq_grps(ncid, &mut num_grps, std::ptr::null_mut()))?;
@@ -249,8 +260,9 @@ pub(crate) fn groups_at_ncid<'f>(ncid: nc_type) -> error::Result<impl Iterator<I
     unsafe {
         error::checked(nc_inq_grps(ncid, std::ptr::null_mut(), grps.as_mut_ptr()))?;
     }
-    Ok(grps.into_iter().map(|id| Group {
+    Ok(grps.into_iter().map(move |id| Group {
         ncid: id,
+        lock: lock.clone(),
         _file: PhantomData,
     }))
 }
@@ -266,6 +278,7 @@ pub(crate) fn group_from_name<'f>(ncid: nc_type, name: &str) -> error::Result<Op
     }
     Ok(Some(Group {
         ncid: grpid,
+        lock: Arc::new(Mutex::new(())),
         _file: PhantomData,
     }))
 }

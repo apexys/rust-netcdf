@@ -64,9 +64,7 @@
 #![warn(missing_docs)]
 #![allow(clippy::must_use_candidate)]
 
-use lazy_static::lazy_static;
 use netcdf_sys::nc_type;
-use std::sync::Mutex;
 
 pub mod attribute;
 pub mod dimension;
@@ -111,11 +109,6 @@ where
 /// Open a netcdf file from a buffer
 pub fn open_mem<'a>(name: Option<&str>, mem: &'a [u8]) -> error::Result<MemFile<'a>> {
     File::open_from_memory(name, mem)
-}
-
-lazy_static! {
-    /// Use this when accessing netcdf functions
-    pub(crate) static ref LOCK: Mutex<()> = Mutex::new(());
 }
 
 pub(crate) mod utils {
