@@ -16,6 +16,7 @@ readme = "README.md"
 [features]
 default = ["ndarray"]
 memory = ["netcdf-sys/memio"]
+static = ["netcdf-sys/static"]
 
 [dependencies]
 lazy_static = "1.4.0"
@@ -27,3 +28,4 @@ structopt = "0.3.3"
 
 [dependencies.netcdf-sys]
 version = "0.2.1"
+path = "netcdf-sys"
