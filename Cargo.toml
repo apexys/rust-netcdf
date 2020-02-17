@@ -27,5 +27,9 @@ tempfile = "3.1.0"
 structopt = "0.3.3"
 
 [dependencies.netcdf-sys]
-version = "0.2.1"
+version = "0.2.2"
 path = "netcdf-sys"
+
+[patch]
+[patch.crates-io]
+hdf5-sys = { git = "https://github.com/magnusuMET/hdf5-rust", branch = "feature/static_build" }

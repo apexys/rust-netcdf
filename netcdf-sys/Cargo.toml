@@ -1,6 +1,6 @@
 [package]
 name = "netcdf-sys"
-version = "0.2.1"
+version = "0.2.2"
 authors = [
     "Michael Hiley <mhiley@gmail.com>",
     "Magnus Ulimoen <magnusu@met.no>"
@@ -35,4 +35,4 @@ dap = ["curl-sys"]
 
 [patch]
 [patch.crates-io]
-hdf5-sys = { git = "https://github.com/magnusuMET/hdf5-rust.git", branch = "feature/static_build" }
+hdf5-sys = { git = "https://github.com/magnusuMET/hdf5-rust", branch = "feature/static_build" }
