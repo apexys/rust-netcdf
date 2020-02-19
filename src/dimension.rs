@@ -2,7 +2,6 @@
 
 #![allow(clippy::similar_names)]
 use super::error;
-use super::LOCK;
 use netcdf_sys::*;
 use std::convert::TryInto;
 use std::marker::PhantomData;
@@ -34,8 +33,9 @@ impl<'g> Dimension<'g> {
             let mut len = 0;
             let err = unsafe {
                 // Must lock in case other variables adds to the dimension length
-                let _l = LOCK.lock().unwrap();
-                error::checked(nc_inq_dimlen(self.id.ncid, self.id.dimid, &mut len))
+                error::checked(super::with_lock(|| {
+                    nc_inq_dimlen(self.id.ncid, self.id.dimid, &mut len)
+                }))
             };
 
             // Should log or handle this somehow...
@@ -52,11 +52,9 @@ impl<'g> Dimension<'g> {
     pub fn name(&self) -> String {
         let mut name = vec![0_u8; NC_MAX_NAME as usize + 1];
         unsafe {
-            error::checked(nc_inq_dimname(
-                self.id.ncid,
-                self.id.dimid,
-                name.as_mut_ptr() as *mut _,
-            ))
+            error::checked(super::with_lock(|| {
+                nc_inq_dimname(self.id.ncid, self.id.dimid, name.as_mut_ptr() as *mut _)
+            }))
             .unwrap();
         }
 
@@ -78,7 +76,8 @@ impl<'g> Dimension<'g> {
 pub(crate) fn from_name_toid(loc: nc_type, name: &str) -> error::Result<Option<nc_type>> {
     let mut dimid = 0;
     let cname = super::utils::short_name_to_bytes(name)?;
-    let e = unsafe { nc_inq_dimid(loc, cname.as_ptr() as *const _, &mut dimid) };
+    let e =
+        unsafe { super::with_lock(|| nc_inq_dimid(loc, cname.as_ptr() as *const _, &mut dimid)) };
     if e == NC_EBADDIM {
         return Ok(None);
     } else {
@@ -90,7 +89,8 @@ pub(crate) fn from_name_toid(loc: nc_type, name: &str) -> error::Result<Option<n
 pub(crate) fn from_name<'f>(loc: nc_type, name: &str) -> error::Result<Option<Dimension<'f>>> {
     let mut dimid = 0;
     let cname = super::utils::short_name_to_bytes(name)?;
-    let e = unsafe { nc_inq_dimid(loc, cname.as_ptr() as *const _, &mut dimid) };
+    let e =
+        unsafe { super::with_lock(|| nc_inq_dimid(loc, cname.as_ptr() as *const _, &mut dimid)) };
     if e == NC_EBADDIM {
         return Ok(None);
     } else {
@@ -98,7 +98,7 @@ pub(crate) fn from_name<'f>(loc: nc_type, name: &str) -> error::Result<Option<Di
     }
     let mut dimlen = 0;
     unsafe {
-        error::checked(nc_inq_dimlen(loc, dimid, &mut dimlen))?;
+        error::checked(super::with_lock(|| nc_inq_dimlen(loc, dimid, &mut dimlen)))?;
     }
 
     Ok(Some(Dimension {
@@ -113,26 +113,20 @@ pub(crate) fn dimensions_from_location<'g>(
 ) -> error::Result<impl Iterator<Item = error::Result<Dimension<'g>>>> {
     let mut ndims = 0;
     unsafe {
-        error::checked(nc_inq_dimids(
-            ncid,
-            &mut ndims,
-            std::ptr::null_mut(),
-            false as _,
-        ))?;
+        error::checked(super::with_lock(|| {
+            nc_inq_dimids(ncid, &mut ndims, std::ptr::null_mut(), false as _)
+        }))?;
     }
     let mut dimids = vec![0; ndims.try_into()?];
     unsafe {
-        error::checked(nc_inq_dimids(
-            ncid,
-            std::ptr::null_mut(),
-            dimids.as_mut_ptr(),
-            false as _,
-        ))?;
+        error::checked(super::with_lock(|| {
+            nc_inq_dimids(ncid, std::ptr::null_mut(), dimids.as_mut_ptr(), false as _)
+        }))?;
     }
     Ok(dimids.into_iter().map(move |dimid| {
         let mut dimlen = 0;
         unsafe {
-            error::checked(nc_inq_dimlen(ncid, dimid, &mut dimlen))?;
+            error::checked(super::with_lock(|| nc_inq_dimlen(ncid, dimid, &mut dimlen)))?;
         }
         Ok(Dimension {
             len: core::num::NonZeroUsize::new(dimlen),
@@ -148,17 +142,21 @@ pub(crate) fn dimensions_from_variable<'g>(
 ) -> error::Result<impl Iterator<Item = error::Result<Dimension<'g>>>> {
     let mut ndims = 0;
     unsafe {
-        error::checked(nc_inq_varndims(ncid, varid, &mut ndims))?;
+        error::checked(super::with_lock(|| {
+            nc_inq_varndims(ncid, varid, &mut ndims)
+        }))?;
     }
     let mut dimids = vec![0; ndims.try_into()?];
     unsafe {
-        error::checked(nc_inq_vardimid(ncid, varid, dimids.as_mut_ptr()))?;
+        error::checked(super::with_lock(|| {
+            nc_inq_vardimid(ncid, varid, dimids.as_mut_ptr())
+        }))?;
     }
 
     Ok(dimids.into_iter().map(move |dimid| {
         let mut dimlen = 0;
         unsafe {
-            error::checked(nc_inq_dimlen(ncid, dimid, &mut dimlen))?;
+            error::checked(super::with_lock(|| nc_inq_dimlen(ncid, dimid, &mut dimlen)))?;
         }
         Ok(Dimension {
             len: core::num::NonZeroUsize::new(dimlen),
@@ -174,7 +172,8 @@ pub(crate) fn dimension_from_name<'f>(
 ) -> error::Result<Option<Dimension<'f>>> {
     let cname = super::utils::short_name_to_bytes(name)?;
     let mut dimid = 0;
-    let e = unsafe { nc_inq_dimid(ncid, cname.as_ptr() as *const _, &mut dimid) };
+    let e =
+        unsafe { super::with_lock(|| nc_inq_dimid(ncid, cname.as_ptr() as *const _, &mut dimid)) };
     if e == NC_EBADDIM {
         return Ok(None);
     } else {
@@ -182,7 +181,7 @@ pub(crate) fn dimension_from_name<'f>(
     }
     let mut dimlen = 0;
     unsafe {
-        error::checked(nc_inq_dimlen(ncid, dimid, &mut dimlen)).unwrap();
+        error::checked(super::with_lock(|| nc_inq_dimlen(ncid, dimid, &mut dimlen))).unwrap();
     }
     Ok(Some(Dimension {
         len: core::num::NonZeroUsize::new(dimlen),
@@ -199,12 +198,9 @@ pub(crate) fn add_dimension_at<'f>(
     let cname = super::utils::short_name_to_bytes(name)?;
     let mut dimid = 0;
     unsafe {
-        error::checked(nc_def_dim(
-            ncid,
-            cname.as_ptr() as *const _,
-            len,
-            &mut dimid,
-        ))?;
+        error::checked(super::with_lock(|| {
+            nc_def_dim(ncid, cname.as_ptr() as *const _, len, &mut dimid)
+        }))?;
     }
     Ok(Dimension {
         len: core::num::NonZeroUsize::new(dimid.try_into()?),

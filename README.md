@@ -48,6 +48,11 @@ docker run -it --rm netcdf
 
 Some examples of usage can be found in the [tests/lib.rs](tests/lib.rs) file. The documentation can also be found using `cargo doc`.
 
+
+## Thread safety
+
+The `netcdf-c` library is not threadsafe. To render a safe interface, a global mutex is used to serialize access to the underlying library. If performance is needed, consider using a non threadsafe version of `hdf5`, so double locking is avoided.
+
 ## License
 
 Licensed under either of
