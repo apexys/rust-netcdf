@@ -29,6 +29,7 @@ structopt = "0.3.3"
 [dependencies.netcdf-sys]
 version = "0.2.2"
 path = "netcdf-sys"
+features = ["static"]
 
 [patch]
 [patch.crates-io]
