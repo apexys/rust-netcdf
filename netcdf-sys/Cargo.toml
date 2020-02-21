@@ -17,7 +17,7 @@ build = "build.rs"
 [dependencies]
 libz-sys = { version = "1.0.25" }
 curl-sys = { version = "0.4.25", optional = true }
-hdf5-sys = { git = "https://github.com/magnusuMET/hdf5-rust", branch = "feature/static_build", features = ["hl", "deprecated", "zlib"] }
+hdf5-sys = { git = "https://github.com/apexys/hdf5-rust", branch = "feature/static_build", features = ["hl", "deprecated", "zlib"] }
 
 [dev-dependencies]
 lazy_static = "1.4.0"
@@ -34,4 +34,4 @@ dap = ["curl-sys"]
 
 [patch]
 [patch.crates-io]
-hdf5-sys = { git = "https://github.com/magnusuMET/hdf5-rust", branch = "feature/static_build" }
+hdf5-sys = { git = "https://github.com/apexys/hdf5-rust", branch = "feature/static_build" }
