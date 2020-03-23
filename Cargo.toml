@@ -30,6 +30,7 @@ structopt = "0.3.3"
 [workspace]
 members = [
     "netcdf-sys",
+    "netcdf-src",
 ]
 
 [patch]
